@@ -1,90 +1,141 @@
-/*
-===============================================================================
-DDL Script: Create Silver Tables
-===============================================================================
+-- QUALITY CHECK -- 
 
-*/
+-- Check For Nulls or Duplicates in Primary Key
+-- Expectation: No Result
+SELECT
+prd_id,
+COUNT(*)
+FROM bronze.crm_prd_info
+GROUP BY prd_id
+HAVING COUNT(*) > 1 OR prd_id IS NULL
 
-IF OBJECT_ID('silver.crm_cust_info', 'U') IS NOT NULL
-    DROP TABLE silver.crm_cust_info;
-GO
+-- Check for unwanted Spaces
+-- Expectation: No Results
+SELECT prd_nm
+FROM bronze.crm_prd_info
+WHERE prd_nm != TRIM(prd_nm)
 
-CREATE TABLE silver.crm_cust_info (
-    cst_id              INT,
-    cst_key             NVARCHAR(50),
-    cst_firstname       NVARCHAR(50),
-    cst_lastname        NVARCHAR(50),
-    cst_marital_status  NVARCHAR(50),
-    cst_gndr            NVARCHAR(50),
-    cst_create_date     DATE,
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
-GO
+-- Check for NULLs or Negative Numbers
+-- Expectation: No Result
+SELECT prd_cost
+FROM bronze.crm_prd_info
+WHERE prd_cost < 0 OR prd_cost IS NULL
 
-IF OBJECT_ID('silver.crm_prd_info', 'U') IS NOT NULL
-    DROP TABLE silver.crm_prd_info;
-CREATE TABLE silver.crm_prd_info (
-    prd_id       INT,
-	cat_id		 NVARCHAR(50),
-    prd_key      NVARCHAR(50),
-    prd_nm       NVARCHAR(50),
-    prd_cost     INT,
-    prd_line     NVARCHAR(50),
-    prd_start_dt DATE,
-    prd_end_dt   DATE,
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
+-- Data Standardization & Consistency
+SELECT prd_line
+FROM bronze.crm_prd_info
 
-IF OBJECT_ID('silver.crm_sales_details', 'U') IS NOT NULL
-    DROP TABLE silver.crm_sales_details;
-GO
+-- Check for Invalid Date Orders
+SELECT *
+FROM bronze.crm_prd_info
+WHERE prd_end_dt < prd_start_dt
 
-CREATE TABLE silver.crm_sales_details (
-    sls_ord_num  NVARCHAR(50),
-    sls_prd_key  NVARCHAR(50),
-    sls_cust_id  INT,
-    sls_order_dt DATE,
-    sls_ship_dt  DATE,
-    sls_due_dt   DATE,
-    sls_sales    INT,
-    sls_quantity INT,
-    sls_price    INT,
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
-GO
+SELECT * 
+FROM silver.crm_prd_info
 
-IF OBJECT_ID('silver.erp_loc_a101', 'U') IS NOT NULL
-    DROP TABLE silver.erp_loc_a101;
-GO
+-- Check for Invalid Dates
+SELECT
+NULLIF(sls_order_dt,0) sls_order_dt
+FROM bronze.crm_sales_details
+WHERE sls_order_dt <= 0 
+OR LEN(sls_order_dt) != 8 
+OR sls_order_dt > 20500101
+OR sls_order_dt < 19000101
 
-CREATE TABLE silver.erp_loc_a101 (
-    cid    NVARCHAR(50),
-    cntry  NVARCHAR(50),
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
-GO
+SELECT
+NULLIF(sls_ship_dt,0) sls_ship_dt
+FROM bronze.crm_sales_details
+WHERE sls_ship_dt <= 0 
+OR LEN(sls_ship_dt) != 8 
+OR sls_ship_dt > 20500101
+OR sls_ship_dt < 19000101
 
-IF OBJECT_ID('silver.erp_cust_az12', 'U') IS NOT NULL
-    DROP TABLE silver.erp_cust_az12;
-GO
+SELECT
+NULLIF(sls_due_dt,0) sls_due_dt
+FROM bronze.crm_sales_details
+WHERE sls_due_dt <= 0 
+OR LEN(sls_due_dt) != 8 
+OR sls_due_dt > 20500101
+OR sls_due_dt < 19000101
 
-CREATE TABLE silver.erp_cust_az12 (
-    cid    NVARCHAR(50),
-    bdate  DATE,
-    gen    NVARCHAR(50),
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
-GO
+-- Check for Invalid Dates Order
+SELECT
+*
+FROM bronze.crm_sales_details
+WHERE sls_order_dt > sls_ship_dt OR sls_order_dt > sls_due_dt
 
-IF OBJECT_ID('silver.erp_px_cat_g1v2', 'U') IS NOT NULL
-    DROP TABLE silver.erp_px_cat_g1v2;
-GO
+-- Check Data Consistency: Between Sales, Quantity and Price
+-- >> Sales = Quantity * Price
+-- >> Values must not be NULL, zero, or negative
+SELECT DISTINCT
+sls_sales,
+sls_quantity,
+sls_price
+FROM silver.crm_sales_details
+WHERE sls_sales != sls_quantity * sls_price
+OR sls_sales IS NULL OR sls_quantity IS NULL OR sls_price IS NULL
+OR sls_sales <= 0 OR sls_quantity <= 0 OR sls_price <= 0
+ORDER BY sls_sales, sls_quantity, sls_price
 
-CREATE TABLE silver.erp_px_cat_g1v2 (
-    id           NVARCHAR(50),
-    cat          NVARCHAR(50),
-    subcat       NVARCHAR(50),
-    maintenance  NVARCHAR(50),
-	dwh_create_date DATETIME2 DEFAULT GETDATE()
-);
-GO
+SELECT * FROM silver.crm_sales_details
+
+-- Check for Invalid Dates Order
+SELECT
+*
+FROM silver.crm_sales_details
+WHERE sls_order_dt > sls_ship_dt OR sls_order_dt > sls_due_dt
+
+
+		--   ERP tables ---
+
+-- Identify Out-of-Range Dates
+SELECT DISTINCT
+bdate
+FROM bronze.erp_cust_az12
+WHERE bdate < '1924-01-01' OR bdate > GETDATE()
+
+SELECT DISTINCT
+bdate
+FROM silver.erp_cust_az12
+WHERE bdate < '1924-01-01' OR bdate > GETDATE()
+
+-- Data Standardization & Consistency
+SELECT DISTINCT 
+gen,
+CASE WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female'
+	 WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male'
+ELSE 'n/a'
+END AS gen
+FROM bronze.erp_cust_az12
+
+SELECT * FROM silver.erp_cust_az12
+
+-- Data Standardization & Consistency
+SELECT DISTINCT cntry
+FROM bronze.erp_loc_a101
+ORDER BY cntry
+
+SELECT DISTINCT cntry
+FROM silver.erp_loc_a101
+ORDER BY cntry
+SELECT * FROM silver.erp_loc_a101
+
+-- Check for unwanted Spaces
+-- Expectation: No Results
+SELECT *
+FROM bronze.erp_px_cat_g1v2
+WHERE cat != TRIM(cat) OR subcat != TRIM(subcat) OR maintenance != TRIM(maintenance)
+
+-- Data Standardization & Consistency
+SELECT DISTINCT cat
+FROM bronze.erp_px_cat_g1v2
+
+SELECT DISTINCT subcat
+FROM bronze.erp_px_cat_g1v2
+
+SELECT DISTINCT maintenance
+FROM bronze.erp_px_cat_g1v2
+
+SELECT * FROM silver.erp_px_cat_g1v2
+
+
